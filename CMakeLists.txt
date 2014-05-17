@@ -138,7 +138,15 @@ if(WIN32)
 	ENDIF( MINGW )
 endif(WIN32)
 
-include_directories(${CMAKE_CURRENT_BINARY_DIR} ${ANTLR_DIR} ${QHEXEDIT_DIR} ${QCUSTOMPLOT_DIR} src)
+# add extra library path for MacOS
+if(APPLE)
+	find_library(LIBSQLITE sqlite3 HINTS /usr/local/lib /usr/local/opt/sqlite/lib)
+	set(ADDITIONAL_INCLUDE_PATHS /usr/local/include /usr/local/opt/sqlite/include)
+else(APPLE)
+	find_library(LIBSQLITE sqlite3)
+endif(APPLE)
+
+include_directories(${CMAKE_CURRENT_BINARY_DIR} ${ANTLR_DIR} ${QHEXEDIT_DIR} ${QCUSTOMPLOT_DIR} ${ADDITIONAL_INCLUDE_PATHS} src)
 
 add_executable(${PROJECT_NAME} ${SQLB_HDR} ${SQLB_SRC} ${SQLB_FORM_HDR} ${SQLB_MOC} ${SQLB_RESOURCES_RCC})
 
@@ -150,7 +158,7 @@ add_dependencies(${PROJECT_NAME} antlr qhexedit qcustomplot)
 
 link_directories(${CMAKE_CURRENT_BINARY_DIR}/${ANTLR_DIR} ${CMAKE_CURRENT_BINARY_DIR}/${QHEXEDIT_DIR} ${CMAKE_CURRENT_BINARY_DIR}/${QCUSTOMPLOT_DIR})
 
-target_link_libraries(${PROJECT_NAME} antlr qhexedit qcustomplot ${QT_LIBRARIES} ${WIN32_STATIC_LINK} sqlite3 ${ADDITIONAL_LIBS})
+target_link_libraries(${PROJECT_NAME} antlr qhexedit qcustomplot ${QT_LIBRARIES} ${WIN32_STATIC_LINK} ${LIBSQLITE} ${ADDITIONAL_LIBS})
 
 install(TARGETS ${PROJECT_NAME}
 	RUNTIME DESTINATION bin
@@ -171,8 +179,8 @@ if(WIN32 AND NOT UNIX)
 	set(CPACK_PACKAGE_ICON "${CMAKE_CURRENT_SOURCE_DIR}\\\\src\\\\iconwin.ico")
 	set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\sqlitebrowser.exe")
 	set(CPACK_NSIS_DISPLAY_NAME "${CPACK_PACKAGE_INSTALL_DIRECTORY}")
-	set(CPACK_NSIS_HELP_LINK "https:\\\\\\\\github.com\\\\rp-\\\\sqlitebrowser")
-	set(CPACK_NSIS_URL_INFO_ABOUT "https:\\\\\\\\github.com\\\\rp-\\\\sqlitebrowser")
+	set(CPACK_NSIS_HELP_LINK "https:\\\\\\\\github.com\\\\sqlitebrowser\\\\sqlitebrowser")
+	set(CPACK_NSIS_URL_INFO_ABOUT "https:\\\\\\\\github.com\\\\sqlitebrowser\\\\sqlitebrowser")
 	set(CPACK_NSIS_CONTACT "peinthor@gmail.com")
 	set(CPACK_NSIS_MODIFY_PATH ON)
 else(WIN32 AND NOT UNIX)

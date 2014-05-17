@@ -77,10 +77,8 @@ void MainWindow::init()
     ui->dbTreeWidget->setColumnWidth(0, 300);
 
     // Set up filter row
-    FilterTableHeader* tableHeader = new FilterTableHeader(ui->dataTable);
-    connect(tableHeader, SIGNAL(filterChanged(int,QString)), m_browseTableModel, SLOT(updateFilter(int,QString)));
-    connect(tableHeader, SIGNAL(filterChanged(int,QString)), this, SLOT(setRecordsetLabel()));
-    ui->dataTable->setHorizontalHeader(tableHeader);
+    m_tableHeader = new FilterTableHeader(ui->dataTable);
+    ui->dataTable->setHorizontalHeader(m_tableHeader);
 
     // Create the actions for the recently opened dbs list
     for(int i = 0; i < MaxRecentFiles; ++i) {
@@ -118,7 +116,8 @@ void MainWindow::init()
     ui->statusbar->addPermanentWidget(statusEncodingLabel);
 
     // Connect some more signals and slots
-    connect(tableHeader, SIGNAL(sectionClicked(int)), this, SLOT(browseTableHeaderClicked(int)));
+    connect(m_tableHeader, SIGNAL(filterChanged(int,QString)), this, SLOT(setRecordsetLabel()));
+    connect(m_tableHeader, SIGNAL(sectionClicked(int)), this, SLOT(browseTableHeaderClicked(int)));
     connect(ui->dataTable->verticalScrollBar(), SIGNAL(valueChanged(int)), this, SLOT(setRecordsetLabel()));
     connect(editWin, SIGNAL(goingAway()), this, SLOT(editWinAway()));
     connect(editWin, SIGNAL(updateRecordText(int, int, QByteArray)), this, SLOT(updateRecordText(int, int, QByteArray)));
@@ -142,7 +141,7 @@ void MainWindow::init()
     m_NetworkManager = new QNetworkAccessManager(this);
     QObject::connect(m_NetworkManager, SIGNAL(finished(QNetworkReply*)), this, SLOT(httpresponse(QNetworkReply*)));
 
-    QUrl url("https://raw.github.com/rp-/sqlitebrowser/master/currentrelease");
+    QUrl url("https://raw.github.com/sqlitebrowser/sqlitebrowser/master/currentrelease");
     m_NetworkManager->get(QNetworkRequest(url));
 #endif
 }
@@ -365,6 +364,7 @@ void MainWindow::fileClose()
     // Delete the model for the Browse tab and create a new one
     delete m_browseTableModel;
     m_browseTableModel = new SqliteTableModel(this, &db, PreferencesDialog::getSettingsValue("db", "prefetchsize").toInt());
+    connect(m_tableHeader, SIGNAL(filterChanged(int,QString)), m_browseTableModel, SLOT(updateFilter(int,QString)));
 
     // Manually update the recordset label inside the Browse tab now
     setRecordsetLabel();
@@ -1327,7 +1327,7 @@ void MainWindow::httpresponse(QNetworkReply *reply)
                 msgBox.setTextFormat(Qt::RichText);
                 msgBox.setWindowTitle(tr("New version available."));
                 msgBox.setText(tr("A new sqlitebrowser version is available (%1.%2.%3).<br/><br/>"
-                                  "Please download at <a href='https://github.com/rp-/sqlitebrowser/releases'>https://github.com/rp-/sqlitebrowser/releases</a>.").arg(major).arg(minor).arg(patch));
+                                  "Please download at <a href='https://github.com/sqlitebrowser/sqlitebrowser/releases'>https://github.com/sqlitebrowser/sqlitebrowser/releases</a>.").arg(major).arg(minor).arg(patch));
                 msgBox.exec();
 
                 if(msgBox.clickedButton() == idontcarebutton)
@@ -1382,10 +1382,25 @@ void MainWindow::updatePlot(SqliteTableModel *model, bool update)
     // add columns to x/y seleciton tree widget
     if(update)
     {
+        // disconnect treeplotcolumns item changed updates
         disconnect(ui->treePlotColumns, SIGNAL(itemChanged(QTreeWidgetItem*,int)),
                    this,SLOT(on_treePlotColumns_itemChanged(QTreeWidgetItem*,int)));
 
         m_currentPlotModel = model;
+
+        // save current selected columns, so we can restore them after the update
+        QString sItemX; // selected X column
+        QStringList sItemsY; // selected Y columns
+        for(int i = 0; i < ui->treePlotColumns->topLevelItemCount(); ++i)
+        {
+            QTreeWidgetItem* item = ui->treePlotColumns->topLevelItem(i);
+            if(item->checkState(PlotColumnX) == Qt::Checked)
+                sItemX = item->text(PlotColumnField);
+
+            if(item->checkState(PlotColumnY) == Qt::Checked)
+                sItemsY << item->text(PlotColumnField);
+        }
+
         ui->treePlotColumns->clear();
 
         if(model)
@@ -1403,10 +1418,18 @@ void MainWindow::updatePlot(SqliteTableModel *model, bool update)
                     itemdata = i << 16;
                     itemdata |= columntype;
                     columnitem->setData(PlotColumnField, Qt::UserRole, itemdata);
-
                     columnitem->setText(PlotColumnField, model->headerData(i, Qt::Horizontal).toString());
-                    columnitem->setCheckState(PlotColumnY, Qt::Unchecked);
-                    columnitem->setCheckState(PlotColumnX, Qt::Unchecked);
+
+                    // restore previous check state
+                    if(sItemsY.contains(columnitem->text(PlotColumnField)))
+                        columnitem->setCheckState(PlotColumnY, Qt::Checked);
+                    else
+                        columnitem->setCheckState(PlotColumnY, Qt::Unchecked);
+                    if(sItemX == columnitem->text(PlotColumnField))
+                        columnitem->setCheckState(PlotColumnX, Qt::Checked);
+                    else
+                        columnitem->setCheckState(PlotColumnX, Qt::Unchecked);
+
                     ui->treePlotColumns->addTopLevelItem(columnitem);
                 }
             }
@@ -1430,12 +1453,16 @@ void MainWindow::updatePlot(SqliteTableModel *model, bool update)
     }
 
     QStringList yAxisLabels;
+    // right now we don't support more than 6 colors, they should be setable via the columns tree anyway
     QVector<QColor> colors;
     colors << Qt::blue << Qt::red << Qt::green << Qt::darkYellow << Qt::darkCyan << Qt::darkGray;
 
     ui->plotWidget->clearGraphs();
     if(xitem)
     {
+        // regain the model column index and the datatype
+        // leading 16 bit are column index, the other 16 bit are the datatype
+        // right now datatype is only important for X axis (date, non date)
         uint xitemdata = xitem->data(PlotColumnField, Qt::UserRole).toUInt();
         int x = xitemdata >> 16;
         int xtype = xitemdata & (uint)0xFF;
@@ -1458,14 +1485,19 @@ void MainWindow::updatePlot(SqliteTableModel *model, bool update)
             QTreeWidgetItem* item = ui->treePlotColumns->topLevelItem(i);
             if(item->checkState((PlotColumnY)) == Qt::Checked && ui->plotWidget->graphCount() < colors.size())
             {
+                // regain the model column index and the datatype
+                // leading 16 bit are column index
                 uint itemdata = item->data(0, Qt::UserRole).toUInt();
                 int column = itemdata >> 16;
                 QCPGraph* graph = ui->plotWidget->addGraph();
 
                 int y = column;
 
-                graph->setPen(QPen(colors[y]));
+                graph->setPen(QPen(colors[ui->plotWidget->graphCount() - 1]));
 
+                // prepare the data vectors for qcustomplot
+                // possible improvement might be a QVector subclass that directly
+                // access the model data, to save memory, we are copying here
                 QVector<double> xdata(model->rowCount()), ydata(model->rowCount());
                 for(int i = 0; i < model->rowCount(); ++i)
                 {
@@ -1483,10 +1515,19 @@ void MainWindow::updatePlot(SqliteTableModel *model, bool update)
 
                     ydata[i] = model->data(model->index(i, y)).toDouble();
                 }
+
+                // set some graph styles, this could also be improved to let the user choose
+                // some styling
                 graph->setData(xdata, ydata);
                 graph->setLineStyle(QCPGraph::lsLine);
                 graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 5));
+
+                // gather Y label column names
                 yAxisLabels << model->headerData(y, Qt::Horizontal).toString();
+
+                // scaling is anything than optimal right now, the last selected
+                // Y axis will always "win" the scaling, either let the use choose
+                // or try to scale the plot by the graph with the biggest values
                 graph->rescaleAxes();
             }
         }
@@ -1520,4 +1561,37 @@ void MainWindow::on_treePlotColumns_itemChanged(QTreeWidgetItem *changeitem, int
                 this,SLOT(on_treePlotColumns_itemChanged(QTreeWidgetItem*,int)));
     }
     updatePlot(m_currentPlotModel, false);
+}
+
+void MainWindow::on_butSavePlot_clicked()
+{
+    QString fileName = QFileDialog::getSaveFileName(this,
+                                                    tr("Choose a filename to save under"),
+                                                    QString(),
+                                                    tr("PNG(*.png);;JPG(*.jpg);;PDF(*.pdf);;BMP(*.bmp);;All Files(*)")
+                                                    );
+    if(!fileName.isEmpty())
+    {
+        if(fileName.endsWith(".png", Qt::CaseInsensitive))
+        {
+            ui->plotWidget->savePng(fileName);
+        }
+        else if(fileName.endsWith(".jpg", Qt::CaseInsensitive))
+        {
+            ui->plotWidget->saveJpg(fileName);
+        }
+        else if(fileName.endsWith(".pdf", Qt::CaseInsensitive))
+        {
+            ui->plotWidget->savePdf(fileName);
+        }
+        else if(fileName.endsWith(".bmp", Qt::CaseInsensitive))
+        {
+            ui->plotWidget->saveBmp(fileName);
+        }
+        else
+        {
+            fileName += ".png";
+            ui->plotWidget->savePng(fileName);
+        }
+    }
 }
